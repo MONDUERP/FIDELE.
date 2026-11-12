@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanner · Fidèle</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="index.html">Fidèle<span>.</span></a>
+    <div class="row hide" id="topActions"><a class="btn ghost sm" href="admin.html">Gérant</a><button class="btn ghost sm" id="logoutBtn">Déconnexion</button></div>
+  </header>
+  <div id="login"></div>
+
+  <main id="app" class="hide">
+    <h1 style="margin-bottom:14px">Scanner une carte</h1>
+    <div class="scanner">
+      <video id="video" playsinline muted></video>
+      <div class="frame"><i></i><i></i><i></i><i></i></div>
+      <button class="start" id="camBtn">Activer la caméra</button>
+    </div>
+    <canvas id="canvas" class="hide"></canvas>
+
+    <div id="result"></div>
+
+    <div class="panel" style="padding:14px">
+      <div class="row">
+        <input class="inp" id="q" placeholder="Code, prénom ou téléphone" autocomplete="off" style="flex:1">
+        <button class="btn sm" id="qGo">Chercher</button>
+      </div>
+      <ul class="list" id="found" style="margin-top:6px"></ul>
+    </div>
+  </main>
+</div>
+
+<div class="modal" id="modal"><div class="box">
+  <h3 style="margin-bottom:4px">Carte de <span id="mName"></span></h3>
+  <p class="small">Le client scanne ce QR avec son téléphone pour retrouver sa carte.</p>
+  <div class="poster"><div class="qr" id="mQr"></div></div>
+  <button class="btn" id="mClose">Fermer</button>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// Écran du serveur : scan caméra + recherche manuelle
+let cur = null;          // {card, goal, reward} affiché dans le panneau résultat
+let lock = false;        // évite de traiter 10 fois le même QR
+let scanning = false;
+const video = $('#video'), canvas = $('#canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+requireStaff($('#login'), () => {
+  $('#app').classList.remove('hide');
+  $('#topActions').classList.remove('hide');
+});
+$('#logoutBtn').addEventListener('click', logout);
+
+// ---------- Caméra ----------
+$('#camBtn').addEventListener('click', async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    $('#camBtn').classList.add('hide');
+    scanning = true;
+    requestAnimationFrame(tick);
+  } catch (e) {
+    toast('Caméra refusée ou indisponible. Utilise la recherche.');
+  }
+});
+
+function tick() {
+  if (!scanning) return;
+  if (!lock && !document.hidden && video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
+    const k = Math.min(1, 640 / video.videoWidth);
+    const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    const hit = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+    if (hit && hit.data) onQR(hit.data);
+  }
+  requestAnimationFrame(tick);
+}
+
+async function onQR(text) {
+  lock = true;
+  const m = text.match(UUID_RE);
+  if (!m) { toast('Ce QR n\'est pas une carte de fidélité.'); setTimeout(() => { lock = false; }, 1500); return; }
+  await stamp(m[0]);
+  setTimeout(() => { lock = false; }, 3000);
+}
+
+// ---------- Tampon / récompense ----------
+async function stamp(scan) {
+  const { data, error } = await sb.rpc('add_stamp', { p_scan: scan });
+  if (error || !data) return showMsg('warn', 'Connexion impossible', 'Le tampon n\'a pas été enregistré. Vérifie le réseau et rescanne.');
+  if (data.error === 'deja_scanne') { cur = data; return showCard('warn', 'Déjà scannée il y a moins d\'une minute'); }
+  if (data.error) return showMsg('warn', errText(data.error), '');
+  cur = data;
+  if (navigator.vibrate) navigator.vibrate(80);
+  showCard('ok', data.won ? '🎁 Carte complétée : ' + data.reward : '✓ +1 tampon');
+}
+
+async function redeem() {
+  if (!cur) return;
+  const { data, error } = await sb.rpc('redeem', { p_card_id: cur.card.id });
+  if (error || !data) return toast('Connexion impossible.');
+  if (data.error) return toast(errText(data.error));
+  cur.card = data.card;
+  showCard('ok', '✓ Récompense utilisée');
+}
+
+function showMsg(kind, title, sub) {
+  $('#result').innerHTML = '<div class="result ' + kind + '"><h3>' + esc(title) + '</h3>' + (sub ? '<p class="small" style="margin-top:4px">' + esc(sub) + '</p>' : '') + '</div>';
+}
+
+function showCard(kind, title) {
+  const c = cur.card, goal = cur.goal, left = goal - c.stamps;
+  $('#result').innerHTML =
+    '<div class="result ' + kind + '">' +
+    '<div class="eyebrow" style="margin:0;color:var(--' + (kind === 'ok' ? 'ok' : 'warn') + ')">' + esc(title) + '</div>' +
+    '<div class="row sp"><h3 style="font-size:20px">' + esc(c.first_name) + '</h3><span class="pill">' + esc(c.code) + '</span></div>' +
+    '<div class="meter"><b style="width:' + Math.min(100, c.stamps / goal * 100) + '%"></b></div>' +
+    '<div class="small">' + c.stamps + ' / ' + goal + ' · encore ' + left + ' avant : ' + esc(cur.reward) + '</div>' +
+    (c.rewards ? '<button class="btn accent" style="margin-top:14px" id="redeemBtn">Utiliser la récompense (' + c.rewards + ' dispo)</button>' : '') +
+    '<div class="row" style="margin-top:10px"><button class="btn ghost sm grow" id="plusBtn">+1 tampon</button><button class="btn ghost sm grow" id="showBtn">Réafficher sa carte</button></div>' +
+    '</div>';
+  const rb = $('#redeemBtn'); if (rb) rb.addEventListener('click', redeem);
+  $('#plusBtn').addEventListener('click', () => stamp(c.token));
+  $('#showBtn').addEventListener('click', () => {
+    $('#mName').textContent = c.first_name;
+    drawQR($('#mQr'), new URL('carte.html?t=' + c.token, location.href).href, 220);
+    $('#modal').classList.add('on');
+  });
+  window.scrollTo({ top: $('#result').offsetTop - 12, behavior: 'smooth' });
+}
+$('#mClose').addEventListener('click', () => $('#modal').classList.remove('on'));
+
+// ---------- Recherche manuelle ----------
+async function search() {
+  const raw = $('#q').value.trim();
+  const q = raw.replace(/[^0-9A-Za-zÀ-ÿ -]/g, '');
+  if (q.length < 2) return toast('Tape au moins 2 caractères.');
+  const digits = q.replace(/[^0-9]/g, '');
+  const parts = ['first_name.ilike.%' + q + '%', 'code.ilike.%' + q + '%'];
+  if (digits.length >= 2) parts.push('phone.ilike.%' + digits + '%');
+  const { data, error } = await sb.from('cards')
+    .select('id, first_name, code, phone, stamps, rewards, token, restaurants(goal, reward)')
+    .or(parts.join(',')).limit(8);
+  if (error) return toast('Recherche impossible.');
+  const ul = $('#found');
+  if (!data.length) { ul.innerHTML = '<li class="small">Aucun client trouvé.</li>'; return; }
+  ul.innerHTML = data.map((c, i) =>
+    '<li class="tap" data-i="' + i + '"><div class="av">' + esc(c.first_name[0].toUpperCase()) + '</div>' +
+    '<div class="grow"><div class="name">' + esc(c.first_name) + '</div><div class="small">' + esc(c.code) + ' · ' + esc(c.phone) + '</div></div>' +
+    (c.rewards ? '<span class="pill gift">🎁 ' + c.rewards + '</span>' : '') +
+    '<span class="pill">' + c.stamps + '/' + c.restaurants.goal + '</span></li>').join('');
+  ul.querySelectorAll('li.tap').forEach(li => li.addEventListener('click', () => {
+    const c = data[+li.dataset.i];
+    cur = { card: c, goal: c.restaurants.goal, reward: c.restaurants.reward };
+    showCard('ok', 'Client sélectionné');
+  }));
+}
+$('#qGo').addEventListener('click', search);
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+</script>
+</body>
+</html>

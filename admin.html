@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gérant · Fidèle</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top noprint">
+    <a class="brand" href="index.html">Fidèle<span>.</span></a>
+    <div class="row hide" id="topActions"><a class="btn ghost sm" href="scan.html">Scanner</a><button class="btn ghost sm" id="logoutBtn">Déconnexion</button></div>
+  </header>
+  <div id="login"></div>
+
+  <main id="app" class="hide">
+    <div class="noprint">
+      <div class="eyebrow">Back-office</div>
+      <div class="row sp" style="margin-bottom:14px">
+        <h1 id="rName" style="margin:0"></h1>
+        <select class="inp hide" id="rSel" style="width:auto;padding:8px 12px" aria-label="Restaurant"></select>
+      </div>
+      <div class="kpis" id="kpis"></div>
+
+      <div class="panel">
+        <h3 style="margin-bottom:12px">Programme</h3>
+        <div class="field"><label for="setGoal">Tampons pour une récompense</label>
+          <select id="setGoal"><option>5</option><option>6</option><option>8</option><option>10</option><option>12</option></select></div>
+        <div class="field"><label for="setReward">Récompense</label><input id="setReward" maxlength="60"></div>
+        <div class="field"><label>Couleur de la carte</label><div class="swatches" id="swatches"></div></div>
+        <button class="btn" id="saveBtn">Enregistrer</button>
+      </div>
+    </div>
+
+    <div class="panel poster" id="poster">
+      <h2 id="pName" style="font-size:22px"></h2>
+      <p class="small">Scannez pour créer votre carte de fidélité</p>
+      <div class="qr" id="pQr"></div>
+      <p class="small" id="pRule"></p>
+      <div class="noprint" style="margin-top:14px">
+        <p class="small" id="pUrl" style="word-break:break-all;margin-bottom:10px"></p>
+        <div class="row"><button class="btn ghost sm grow" id="copyBtn">Copier le lien</button><button class="btn sm grow" id="printBtn">Imprimer l'affiche</button></div>
+      </div>
+    </div>
+
+    <div class="panel noprint">
+      <div class="row sp" style="margin-bottom:6px"><h3>Clients</h3><span class="small" id="cliCount"></span></div>
+      <ul class="list" id="clients"></ul>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// Back-office du gérant
+const COLORS = ['#B23A2B', '#1F3A5F', '#2F5D50', '#1C1A17', '#8A5A2B', '#6B3FA0'];
+let restos = [], R = null, color = null;
+
+requireStaff($('#login'), init);
+$('#logoutBtn').addEventListener('click', logout);
+
+async function init() {
+  $('#topActions').classList.remove('hide');
+  const { data, error } = await sb.from('staff').select('role, restaurants(*)').eq('role', 'gerant');
+  restos = (data || []).map(s => s.restaurants).filter(Boolean);
+  if (error || !restos.length) {
+    $('#login').innerHTML = '<div class="panel"><h3>Aucun restaurant à gérer</h3><p class="small" style="margin-top:6px">Ce compte n\'est gérant d\'aucun restaurant. Pour scanner, va sur <a href="scan.html">l\'écran serveur</a>.</p></div>';
+    return;
+  }
+  $('#app').classList.remove('hide');
+  const sel = $('#rSel');
+  sel.innerHTML = restos.map(r => '<option value="' + r.id + '">' + esc(r.name) + '</option>').join('');
+  if (restos.length > 1) sel.classList.remove('hide');
+  sel.addEventListener('change', () => pick(sel.value));
+  const saved = store.get('fidele-admin-resto');
+  pick(restos.some(r => r.id === saved) ? saved : restos[0].id);
+  sel.value = R.id;
+}
+
+function pick(id) {
+  R = restos.find(r => r.id === id);
+  store.set('fidele-admin-resto', id);
+  color = R.color;
+  render();
+  loadStats();
+}
+
+function render() {
+  setAccent(color);
+  $('#rName').textContent = R.name;
+  $('#setGoal').value = String(R.goal);
+  if ($('#setGoal').value !== String(R.goal)) {       // valeur hors liste : on l'ajoute
+    $('#setGoal').insertAdjacentHTML('beforeend', '<option>' + R.goal + '</option>');
+    $('#setGoal').value = String(R.goal);
+  }
+  $('#setReward').value = R.reward;
+  $('#swatches').innerHTML = COLORS.map(c => '<button type="button" class="sw ' + (c.toLowerCase() === color.toLowerCase() ? 'on' : '') + '" style="background:' + c + '" data-c="' + c + '" aria-label="Couleur ' + c + '"></button>').join('');
+  const url = new URL('index.html?r=' + R.slug, location.href).href;
+  $('#pName').textContent = R.name;
+  $('#pRule').textContent = R.goal + ' tampons = ' + R.reward.toLowerCase();
+  $('#pUrl').textContent = url;
+  drawQR($('#pQr'), url, 220);
+}
+
+$('#swatches').addEventListener('click', e => {
+  const b = e.target.closest('[data-c]'); if (!b) return;
+  color = b.dataset.c; setAccent(color);
+  document.querySelectorAll('.sw').forEach(s => s.classList.toggle('on', s === b));
+});
+
+$('#saveBtn').addEventListener('click', async () => {
+  const goal = parseInt($('#setGoal').value, 10), reward = $('#setReward').value.trim();
+  if (!reward) return toast('Indique la récompense.');
+  const btn = $('#saveBtn'); btn.disabled = true;
+  const { data, error } = await sb.from('restaurants').update({ goal: goal, reward: reward, color: color }).eq('id', R.id).select();
+  btn.disabled = false;
+  if (error || !data || !data.length) return toast('Enregistrement impossible.');
+  Object.assign(R, data[0]);
+  render();
+  toast('Programme enregistré');
+});
+
+$('#copyBtn').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('#pUrl').textContent); toast('Lien copié'); }
+  catch (e) { toast('Copie impossible : sélectionne le lien à la main.'); }
+});
+$('#printBtn').addEventListener('click', () => window.print());
+
+async function loadStats() {
+  const rid = R.id;
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const [cards, today, used] = await Promise.all([
+    sb.from('cards').select('id, first_name, code, phone, stamps, rewards, total_stamps', { count: 'exact' })
+      .eq('restaurant_id', rid).order('total_stamps', { ascending: false }).limit(1000),
+    sb.from('events').select('id', { count: 'exact', head: true })
+      .eq('restaurant_id', rid).eq('type', 'stamp').gte('created_at', start.toISOString()),
+    sb.from('events').select('id', { count: 'exact', head: true })
+      .eq('restaurant_id', rid).eq('type', 'reward_used')
+  ]);
+  if (rid !== R.id) return;   // l'utilisateur a changé de restaurant entre-temps
+  if (cards.error) return toast('Chargement des clients impossible.');
+  const list = cards.data || [];
+  const pending = list.reduce((a, c) => a + c.rewards, 0);
+  $('#kpis').innerHTML = [
+    [cards.count == null ? list.length : cards.count, 'Clients inscrits'],
+    [today.count || 0, "Tampons aujourd'hui"],
+    [pending, 'Récompenses à servir'],
+    [used.count || 0, 'Récompenses utilisées']
+  ].map(k => '<div class="kpi"><div class="n">' + k[0] + '</div><div class="t">' + k[1] + '</div></div>').join('');
+  $('#cliCount').textContent = (cards.count == null ? list.length : cards.count) + ' au total';
+  $('#clients').innerHTML = list.length ? list.map(c =>
+    '<li><div class="av">' + esc(c.first_name[0].toUpperCase()) + '</div>' +
+    '<div class="grow"><div class="name">' + esc(c.first_name) + '</div><div class="small">' + esc(c.code) + ' · ' + esc(c.phone) + ' · ' + c.total_stamps + ' passages</div></div>' +
+    (c.rewards ? '<span class="pill gift">🎁 ' + c.rewards + '</span>' : '') +
+    '<span class="pill">' + c.stamps + '/' + R.goal + '</span></li>').join('')
+    : '<li class="small">Pas encore de client. Imprime l\'affiche et pose-la au comptoir.</li>';
+}
+</script>
+</body>
+</html>

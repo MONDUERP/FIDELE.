@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ma carte">
+<title>Ma carte de fidélité</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <main id="main" style="padding-top:10px"><p class="small">Chargement…</p></main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// Carte du client : carte.html?t=<token secret>
+(async function () {
+  const main = $('#main');
+  if (!CONFIGURED) return notConfigured(main);
+  const m = (param('t') || store.get('fidele-last') || '').match(UUID_RE);
+  if (!m) { main.innerHTML = '<div class="panel"><h3>Carte introuvable</h3><p class="small" style="margin-top:6px">Scanne le QR code du restaurant pour créer ta carte.</p></div>'; return; }
+  const token = m[0];
+  let last = '';
+
+  async function load(first) {
+    const { data, error } = await sb.rpc('card_view', { p_token: token });
+    if (error) { if (first) main.innerHTML = '<div class="panel"><p class="small">Connexion impossible. Vérifie ton réseau.</p></div>'; return; }
+    if (!data) { main.innerHTML = '<div class="panel"><h3>Carte introuvable</h3><p class="small" style="margin-top:6px">Demande au serveur de te la réafficher.</p></div>'; return; }
+    const sig = JSON.stringify(data);
+    if (sig === last) return;           // rien n'a changé : on ne redessine pas
+    const prev = last ? JSON.parse(last) : null;
+    last = sig;
+    store.set('fidele-last', token);
+    setAccent(data.resto.color);
+    document.title = data.resto.name + ' · Ma carte';
+    main.innerHTML = cardHTML(data) +
+      '<p class="small" style="text-align:center">Montre ce QR code au serveur à chaque passage.<br>Astuce : ajoute cette page à ton écran d\'accueil pour la retrouver en un geste.</p>';
+    drawQR($('#qr'), 'fidele:' + token, 160);
+    if (prev) {
+      if (data.rewards > prev.rewards) toast('🎁 Récompense débloquée : ' + data.resto.reward);
+      else if (data.stamps > prev.stamps) toast('+1 tampon');
+    }
+  }
+
+  await load(true);
+  // Synchronisation : la carte relit le serveur toutes les 4 s tant qu'elle est à l'écran
+  setInterval(() => { if (!document.hidden) load(false); }, 4000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(false); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte de fidélité</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand" id="brand">Fidèle<span>.</span></span></header>
+  <main id="main"><p class="small">Chargement…</p></main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// Page d'inscription client : index.html?r=<slug du restaurant>
+(async function () {
+  const main = $('#main');
+  if (!CONFIGURED) return notConfigured(main);
+  const slug = (param('r') || '').toLowerCase();
+
+  if (!slug) {
+    main.innerHTML = '<h1>Carte de fidélité</h1><p class="small" style="margin-bottom:16px">Scanne le QR code affiché dans ton restaurant pour créer ta carte.</p>' +
+      '<div class="panel"><p class="small">Équipe du restaurant :</p><div class="row" style="margin-top:10px"><a class="btn ghost" href="scan.html">Scanner</a><a class="btn ghost" href="admin.html">Gérant</a></div></div>';
+    return;
+  }
+
+  // Déjà une carte sur ce téléphone ? On l'ouvre directement.
+  const known = store.get('fidele-' + slug);
+  if (known && UUID_RE.test(known)) { location.replace('carte.html?t=' + known); return; }
+
+  const { data: r, error } = await sb.rpc('resto_public', { p_slug: slug });
+  if (error || !r) { main.innerHTML = '<div class="panel"><h3>Restaurant introuvable</h3><p class="small" style="margin-top:6px">Vérifie le QR code scanné.</p></div>'; return; }
+  setAccent(r.color);
+  document.title = 'Carte de fidélité · ' + r.name;
+
+  main.innerHTML =
+    '<div class="eyebrow">Carte de fidélité</div>' +
+    '<h1>' + esc(r.name) + '</h1>' +
+    '<p class="small" style="margin-bottom:18px">' + r.goal + ' tampons = ' + esc(r.reward.toLowerCase()) + '. Inscription en 10 secondes, rien à installer.</p>' +
+    '<div class="panel"><form id="f">' +
+    '<div class="field"><label for="fn">Prénom</label><input id="fn" required maxlength="40" placeholder="Ex. Sarah" autocomplete="given-name"></div>' +
+    '<div class="field"><label for="ph">Téléphone</label><input id="ph" required type="tel" inputmode="tel" placeholder="06 12 34 56 78" autocomplete="tel"></div>' +
+    '<button class="btn accent" type="submit">Créer ma carte</button>' +
+    '<div class="err hide" id="err"></div></form></div>' +
+    '<p class="small" style="text-align:center">Ton prénom et ton numéro servent uniquement à gérer ta carte chez ' + esc(r.name) + '.</p>';
+
+  $('#f').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('#f button'), err = $('#err');
+    btn.disabled = true; err.classList.add('hide');
+    const { data, error } = await sb.rpc('signup', { p_slug: slug, p_first_name: $('#fn').value, p_phone: $('#ph').value });
+    btn.disabled = false;
+    if (error || !data || data.error) {
+      err.textContent = error ? 'Connexion impossible, réessaie.' : errText(data && data.error);
+      err.classList.remove('hide');
+      return;
+    }
+    store.set('fidele-' + slug, data.token);
+    store.set('fidele-last', data.token);
+    location.href = 'carte.html?t=' + data.token;
+  });
+})();
+</script>
+</body>
+</html>
